@@ -64,12 +64,12 @@ jobs:
 
       - name: Require AWS and Terraform state configuration
         env:
-          AWS_ROLE_ARN: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
+          TERRAFORM_AWS_ROLE_ARN: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
           TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
         run: |
           missing=0
-          for name in AWS_ROLE_ARN TF_STATE_BUCKET TF_STATE_REGION; do
+          for name in TERRAFORM_AWS_ROLE_ARN TF_STATE_BUCKET TF_STATE_REGION; do
             if [ -z "${!name}" ]; then
               echo "::error::Configure the repository variable $name before running this workflow."
               missing=1
