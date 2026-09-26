@@ -5,7 +5,7 @@ Deploy the Unit Converter application to EKS without Helm
 
 Usage:
     python3 deploy.py --image-uri YOUR-ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/unit-converter:latest
-    python3 deploy.py --wait-time 300
+    python3 deploy.py --image-uri YOUR-ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/unit-converter:latest --wait-time 300
 """
 
 import argparse
