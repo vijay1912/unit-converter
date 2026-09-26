@@ -45,46 +45,49 @@ Applying the YAML does **not** create the EKS cluster or EC2 worker machines. In
 
 ### Follow the image and request
 
-```mermaid
-flowchart LR
-    subgraph YourComputer["Your computer"]
-        Source["Application source<br/>and Dockerfile"]
-        Docker["Docker builds<br/>container image"]
-        Manifests["YAML manifests<br/>in k8s/"]
-        Kubectl["kubectl"]
-        Helper["Optional deploy.py<br/>takes --image-uri"]
-    end
+This picture separates **where resources live** from **how a request travels**. The EKS cluster and the VPC are existing AWS resources; the control plane is AWS-managed, while the EC2 worker nodes run the app's Pods. The app's namespace, Deployment, and Service are Kubernetes resources created by applying the YAML.
 
-    ECR["Amazon ECR<br/>unit-converter image"]
-    subgraph Existing["Already running in AWS"]
-        Control["EKS control plane<br/>receives kubectl instructions"]
-        subgraph EC2["Existing EC2 worker nodes"]
-            Pod["Application Pods<br/>Deployment: unit-converter-app<br/>container: unit-converter"]
-        end
-    end
-    subgraph Created["App resources created by applying YAML"]
-        Namespace["Namespace<br/>unit-converter"]
-        Deployment["Deployment<br/>unit-converter-app"]
-        Service["Service<br/>unit-converter-service<br/>port 80 → port 8080"]
-        Namespace --> Deployment
-        Namespace --> Service
-    end
-    AWSLB["AWS load balancer<br/>external hostname"]
-    User["Browser or curl"]
-
-    Source --> Docker
-    Docker -->|"push image"| ECR
-    ECR -->|"worker downloads image"| Pod
-    Manifests --> Kubectl
-    Kubectl -->|"apply YAML"| Control
-    Control --> Namespace
-    Deployment -->|"asks Kubernetes to run Pods"| Pod
-    Service -->|"causes AWS LB provisioning"| AWSLB
-    User -->|"HTTP request"| AWSLB
-    AWSLB --> Service
-    Service -->|"sends traffic only to ready Pods"| Pod
-    Helper -.->|"optional: apply YAML and set image"| Kubectl
+```text
+AWS account
+|
++-- Existing Amazon EKS cluster
+|   |
+|   +-- AWS-managed control plane
+|   |     Receives kubectl instructions and manages the cluster
+|   |
+|   +-- Kubernetes namespace: unit-converter                 [YAML creates]
+|         |
+|         +-- Deployment: unit-converter-app                  [YAML creates]
+|         |     Requests 2 app Pods and keeps them running
+|         |
+|         +-- Service: unit-converter-service                 [YAML creates]
+|               Type: LoadBalancer; port 80 -> target port 8080
+|
++-- Existing VPC (network for the cluster)
+    |
+    +-- Public subnet(s)
+    |     AWS selects subnet(s) for the external load balancer
+    |     requested by the Service
+    |
+    +-- Private subnet(s)
+          |
+          +-- Existing EC2 worker node(s), registered with the cluster
+                |
+                +-- Unit Converter Pod(s), scheduled by the Deployment
+                      Container: unit-converter; listens on port 8080
 ```
+
+Image build and traffic are separate short flows:
+
+```text
+IMAGE:  your computer (Docker + Dockerfile) -> push -> ECR
+        EC2 worker node <- pulls image from ECR <- ECR
+
+REQUEST: browser/curl -> AWS load balancer -> Kubernetes Service
+         -> ready Unit Converter Pod on an EC2 worker node
+```
+
+The load balancer is requested by the Kubernetes Service. The Service manifest specifies `type: LoadBalancer`, but does not specify an NLB or another specific load-balancer type; AWS provisions it according to the cluster's configuration and subnet tags.
 
 Here is what happens in order:
 
