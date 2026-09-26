@@ -159,13 +159,11 @@ terraform validate
 
 `terraform validate` requires the provider plugins installed by `terraform init`, but does not need AWS credentials and does not provision resources.
 
-The GitHub Actions workflow in `.github/workflows/terraform-ci.yml` runs the formatting check, initializes providers without a backend, and validates the configuration when a pull request or push to `main` changes files under `eks-terraform/`. It can also be started manually from the Actions tab. The workflow has read-only repository permissions, uses no AWS credentials, and never runs `terraform plan`, `apply`, or `destroy`.
+### One Terraform workflow in GitHub Actions
 
-### Run Terraform plan and apply from GitHub Actions
+The single workflow, `.github/workflows/terraform-deploy.yml` (**Terraform EKS** in the Actions tab), automatically runs `terraform init` and a read-only `terraform plan` when Terraform files or the workflow change on `main`. It does not change infrastructure automatically.
 
-The separate `.github/workflows/terraform-deploy.yml` workflow automatically runs `terraform init` and a read-only `terraform plan` when Terraform files or this workflow change on `main`. The plan job uses the configured S3 backend and AWS OIDC role; it does not apply the plan or change infrastructure.
-
-For a manual run from `main`, the **Terraform operation** menu offers `APPLY` or `DESTROY`. Select the same operation in the confirmation menu. `APPLY` creates a saved plan and applies that exact plan only after an authorized reviewer approves the `eks-production` GitHub Environment. `DESTROY` creates a destroy plan and likewise waits for environment approval before deleting Terraform-managed infrastructure. Do not select either operation unless you intend to make that change.
+To change or delete infrastructure, manually run the workflow from `main`. Choose `APPLY` or `DESTROY`, then select the same value in the confirmation menu. The workflow makes a saved plan first, then waits for approval in the protected `eks-production` environment before applying that exact plan. `DESTROY` deletes the Terraform-managed infrastructure.
 
 Before the automatic plan or manual apply/destroy can run, configure the following:
 
@@ -173,9 +171,9 @@ Before the automatic plan or manual apply/destroy can run, configure the followi
 2. Configure the GitHub Actions OIDC provider (`token.actions.githubusercontent.com`, audience `sts.amazonaws.com`) and an AWS IAM role. Allow only these OIDC subjects for the role: `repo:vijay1912/unit-converter:ref:refs/heads/main` for the plan job and `repo:vijay1912/unit-converter:environment:eks-production` for the apply job. Grant only the AWS permissions needed by the Terraform resources, plus access to the state object and its lock file. The EKS role also requires `iam:PassRole`.
 3. In **Settings → Secrets and variables → Actions → Variables**, add these repository **variables** with their actual values: `TERRAFORM_AWS_ROLE_ARN` (the IAM role ARN), `TF_STATE_BUCKET` (the existing bucket name), and `TF_STATE_REGION` (the bucket's AWS region). Do not create these as secrets. These are identifiers, not access keys; GitHub Actions obtains short-lived AWS credentials through OIDC. The automatic `init`/`plan` and manual operations will stop with a clear error naming any missing variable.
 4. Create the GitHub Environment named `eks-production`. Require an authorized reviewer and restrict deployments to `main`. GitHub environments without configured protection rules do not pause for approval.
-5. After this workflow has been merged into `main`, Terraform changes pushed to `main` automatically run `init` and a read-only plan. To make changes or delete infrastructure, open the repository's Actions tab, select **Terraform Plan and Apply**, choose the `main` branch, and select `APPLY` or `DESTROY` in both the operation and confirmation menus. Review the plan and obtain the required `eks-production` environment approval before the workflow proceeds.
+5. After this workflow has been merged into `main`, Terraform changes pushed to `main` automatically run `init` and a read-only plan. To change or delete infrastructure, open the repository's Actions tab, select **Terraform EKS**, choose the `main` branch, select `APPLY` or `DESTROY` in the operation and confirmation menus, review the plan, and obtain approval in the `eks-production` environment.
 
-The local `terraform init` example above must use the same bucket and key. If infrastructure already exists in a different local or remote state, back it up and migrate that state deliberately before enabling this workflow; an empty state can make Terraform propose creating duplicate resources. Merging a Terraform change to `main` runs only `init` and `plan`; it never automatically applies or destroys infrastructure.
+The local `terraform init` example above must use the same bucket and key. If infrastructure already exists in a different local or remote state, back it up and migrate that state deliberately before enabling this workflow; an empty state can make Terraform propose creating duplicate resources. Merging a Terraform change to `main` runs only `init` and `plan`; apply and destroy are always manual and approval-gated.
 
 This workflow provisions AWS infrastructure only. The current repository does not include an application `Dockerfile`, ECR image configuration, or Kubernetes manifests, so it cannot yet build and deploy the application after apply. Add/configure those application deployment inputs before adding a post-apply application job.
 
