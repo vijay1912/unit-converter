@@ -14,30 +14,42 @@ The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-c
 
 ## How the architecture fits together
 
-Terraform reads the files in `eks-terraform/` and creates the AWS infrastructure below. Read the diagram from the outside in: the **VPC** is the cluster's private network; it contains subnets; EC2 worker computers are placed in private subnets; and Kubernetes **pods** (the units that run application containers) run on those computers.
+Terraform reads the files in `eks-terraform/` and creates the AWS infrastructure below. Start with the AWS account, then look inside the VPC: the VPC contains public and private subnets in two availability zones. The private subnets hold EC2 worker computers; Kubernetes pods can run on those computers after you deploy an application. Together, the EKS control plane and its connected worker computers form the Kubernetes cluster.
 
-The EKS **control plane** is run and managed by AWS, outside your VPC. It manages the Kubernetes cluster and schedules pods onto available worker computers. EKS also uses network interfaces in the VPC subnets you select to communicate with the workers; this Terraform configuration supplies both its public and private subnet IDs. The worker computers are created and maintained by the managed node group `unit-converter-worker-nodes`; by default, it requests two `t3.medium` computers.
+The EKS **control plane** is managed by AWS. It is part of the EKS cluster, but it is not an EC2 worker and does not run inside your VPC. It manages Kubernetes and tells the workers where to run pods. EKS uses network interfaces in the VPC subnets to communicate with the workers. The managed node group `unit-converter-worker-nodes` creates the worker computers across the supplied private subnets; its default desired total is two `t3.medium` instances.
 
 ```mermaid
 flowchart TB
-    EKS["AWS-managed EKS control plane<br/>unit-converter-eks<br/>outside your VPC"]
-
-    subgraph VPC["VPC: unit-converter-eks-vpc"]
+    subgraph ACCOUNT["AWS account"]
         direction TB
-        PUBLIC["Public subnets<br/>internet gateway and NAT gateways"]
+        EKS["AWS-managed EKS control plane<br/>cluster: unit-converter-eks<br/>outside the VPC"]
 
-        subgraph PRIVATE["Private subnets"]
+        subgraph VPC["VPC: unit-converter-eks-vpc<br/>10.0.0.0/16"]
             direction TB
-            NODE["EC2 worker computers<br/>managed node group: unit-converter-worker-nodes<br/>default: 2 × t3.medium"]
-            POD["Kubernetes pods<br/>application containers"]
-            NODE -->|runs| POD
-        end
-    end
+            IGW["Internet gateway<br/>VPC connection to internet"]
 
-    EKS -.->|manages the cluster and schedules pods| NODE
+            subgraph PUBLIC["Public subnets in two AZs<br/>10.0.1.0/24 and 10.0.2.0/24"]
+                direction LR
+                NAT1["NAT gateway 1"]
+                NAT2["NAT gateway 2"]
+            end
+
+            subgraph PRIVATE["Private subnets in two AZs<br/>10.0.101.0/24 and 10.0.102.0/24"]
+                direction LR
+                NODES["EC2 worker computers<br/>managed node group<br/>2 desired, t3.medium"]
+                PODS["Pods run on workers<br/>(added later; not created by Terraform)"]
+                NODES -->|can run| PODS
+            end
+
+            IGW -->|public subnet route| PUBLIC
+            PRIVATE -->|outbound via NAT| PUBLIC
+        end
+
+        EKS -.->|manages Kubernetes; schedules pods on| NODES
+    end
 ```
 
-The EKS control plane is not an EC2 worker and does not run inside your VPC, even though EKS uses network interfaces in the selected VPC subnets to communicate with the cluster. The VPC has both public and private subnets; workers run in the private subnets, while NAT gateways in the public subnets let them make outbound connections without public IP addresses. Security groups are AWS network rules: this configuration attaches the cluster security group to EKS and declares a worker security group and a rule for it, but the managed node-group resource does not explicitly attach that worker security group.
+The two public subnets each contain a NAT gateway. The internet gateway is the VPC's route to the internet; NAT lets private-subnet workers make outbound connections without public IP addresses. The Terraform configuration also creates security groups (AWS network-access rules) and IAM roles (AWS permissions): it assigns the cluster security group and cluster role to EKS, and a worker role to the node group. It declares a worker security group and a rule for it too, but the managed node-group resource does not explicitly attach that worker security group.
 
 This Terraform module creates the AWS infrastructure only. It does not create the unit-converter application, Kubernetes Deployments, or Services. After the cluster and worker computers are ready, you can use `kubectl` to send Kubernetes manifests to the EKS control plane; Kubernetes then schedules the application pods onto the EC2 workers. That application deployment is a separate step.
 
