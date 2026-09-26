@@ -12,6 +12,79 @@ The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-c
 - **The managed node group** is the group of EC2 virtual machines that run Kubernetes workloads. The current defaults request two `t3.medium` instances, with a minimum of one and a maximum of four.
 - **IAM roles and security groups** grant AWS services the permissions and network access needed for the cluster and its worker nodes.
 
+## How the architecture fits together
+
+The diagram shows the AWS resources this Terraform module declares and how they relate. The EKS control plane is managed by AWS. The EC2 worker nodes are provisioned in the VPC's private subnets; NAT gateways in public subnets provide their outbound route. The EKS API endpoint is configured for both public and private access. Your `kubectl` client needs network access to that endpoint and AWS identity authorization.
+
+```mermaid
+flowchart LR
+    TF["Terraform module<br/>networking.tf, security_groups.tf,<br/>iam.tf, eks_cluster.tf,<br/>eks_node_group.tf"]
+    VPC["VPC<br/>unit-converter-eks-vpc"]
+    PUB["Public subnets<br/>internet gateway + NAT gateways"]
+    PRIV["Private subnets<br/>worker-node placement"]
+    SGC["Cluster security group"]
+    SGW["Worker security group"]
+    SGR["Worker-to-cluster<br/>security-group rule"]
+    IAM["Cluster and EC2 IAM roles<br/>policy attachments"]
+    EKS["Amazon EKS control plane<br/>unit-converter-eks"]
+    NG["Managed node group<br/>unit-converter-worker-nodes"]
+    EC2["EC2 worker instances<br/>default: 2 × t3.medium"]
+    KUBECTL["kubectl + AWS credentials<br/>local kubeconfig"]
+    API["EKS Kubernetes API"]
+    APP["Application workloads<br/>deployed separately"]
+
+    TF --> VPC
+    VPC --> PUB
+    VPC --> PRIV
+    TF --> SGC
+    TF --> SGW
+    TF --> SGR
+    TF --> IAM
+    PRIV -->|outbound via NAT| PUB
+    VPC -->|subnets| EKS
+    SGC -->|configured on cluster| EKS
+    SGW --> SGR
+    SGR -->|source| SGC
+    IAM -->|cluster role| EKS
+    IAM -->|node role| NG
+    EKS --> NG
+    PRIV -->|node group subnets| NG
+    NG --> EC2
+    KUBECTL -->|authenticated connection| API
+    API <--> EKS
+    EC2 -->|runs workloads| APP
+    KUBECTL -.->|later deployment step| APP
+```
+
+Terraform creates the AWS foundation through the `aws` provider. It does not create a Kubernetes Deployment, Service, or the unit-converter application. After the cluster and nodes are ready, an operator can use `kubectl` (or another deployment tool) to submit Kubernetes manifests separately; those workloads are then scheduled onto the EC2 worker nodes.
+
+The cluster security group is configured on the EKS cluster. The Terraform also declares a worker security group and a rule that allows traffic from it to the cluster security group; the managed node-group resource selects its private subnets and IAM role but does not explicitly attach that worker security group.
+
+## Provisioning workflow
+
+The normal sequence is to configure inputs, let Terraform inspect the module, review its proposed AWS changes, and only then apply them. After creation, Terraform outputs help configure `kubectl`; Kubernetes manifests are a separate, later step.
+
+```mermaid
+flowchart TD
+    INPUT["Review variables.tf<br/>and edit terraform.tfvars"]
+    INIT["terraform init<br/>download provider"]
+    CHECK["terraform fmt<br/>terraform validate"]
+    PLAN["terraform plan<br/>inspect resources and costs"]
+    DECISION{"Plan reviewed<br/>and approved?"}
+    APPLY["terraform apply<br/>create AWS infrastructure"]
+    OUTPUT["terraform output<br/>read cluster details"]
+    CONFIG["aws eks update-kubeconfig<br/>configure local kubectl"]
+    VERIFY["Verify cluster and nodes<br/>with AWS CLI and kubectl"]
+    MANIFESTS["Optional later step:<br/>apply application manifests"]
+    STOP["Stop; revise inputs or cancel"]
+
+    INPUT --> INIT --> CHECK --> PLAN --> DECISION
+    DECISION -->|Yes| APPLY --> OUTPUT --> CONFIG --> VERIFY --> MANIFESTS
+    DECISION -->|No| STOP
+```
+
+`terraform plan` is a preview; it does not create the resources. `terraform apply` makes the AWS changes only after confirmation. Terraform state records the infrastructure Terraform manages. Keep that state safe and available for future plans and for `terraform destroy`.
+
 ## 1. Prerequisites
 
 Install these tools on your computer:
