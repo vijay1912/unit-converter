@@ -1,12 +1,12 @@
 # Manual Kubernetes Deployment
 
-This guide deploys the Unit Converter to an **already-created** EKS cluster using the plain YAML manifests in `k8s/`. It assumes the EKS cluster and EC2 worker infrastructure already exist; it does not run Terraform or create that infrastructure. It does not use Helm or deployment scripts.
+This guide deploys the Unit Converter to an **already-created** EKS cluster using the plain YAML manifests in `k8s/`. It assumes the EKS cluster and EC2 worker infrastructure already exist; it does not run Terraform or create that infrastructure. Manual `kubectl` commands are the primary path; the optional `deploy.py` helper is the only automation option documented here. There is no Helm.
 
 ## Prerequisites
 
 - An existing EKS cluster and EC2 worker node group from `eks-terraform/`.
 - AWS CLI credentials authorized to describe the cluster, update kubeconfig, and push images to ECR.
-- `kubectl`, Docker, and `curl` installed.
+- `kubectl`, Docker, Python 3, and `curl` installed.
 - Kubernetes access to the cluster; the EC2 workers need permission to pull images from the ECR repository in the same AWS account.
 - Run the shell commands below from the repository root. They use Bash syntax.
 
@@ -115,6 +115,16 @@ curl --fail "http://<EXTERNAL-HOSTNAME>/"
 ```
 
 The HPA also needs the Kubernetes resource metrics API (commonly provided by Metrics Server). If its metrics show `<unknown>`, verify that the metrics API is available; the application rollout and LoadBalancer Service do not depend on HPA metrics.
+
+## Optional Python deployment helper
+
+Manual `kubectl` deployment above is the recommended path. If you prefer the repository's Python helper, first build and push the image as described in step 2, then run this from the repository root:
+
+```bash
+python3 deploy.py --image-uri "$IMAGE_URI"
+```
+
+The helper applies the manifests from `./k8s`, sets the `unit-converter` container to the supplied image before checking readiness, and waits for the `unit-converter-app` Deployment and `unit-converter-service` LoadBalancer. It does not build or push the image; pass a real image URI and do not run it without `--image-uri`.
 
 ## Diagnostics
 

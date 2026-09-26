@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unit-converter-config
+  namespace: unit-converter
+data:
+  application.properties: |
+    spring.application.name=unit-converter
+    server.port=8080
+    logging.level.root=INFO
+    logging.level.com.unitconverter=DEBUG
