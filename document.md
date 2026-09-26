@@ -21,6 +21,102 @@ Kubernetes runs the application in the `unit-converter` namespace. The manifests
 
 An **image** is the packaged application that Docker builds; ECR stores that image. A **Pod** is the unit Kubernetes runs, and contains the application container. A **Deployment** maintains the desired number of Pods. A **Service** provides a stable network address for those Pods.
 
+## Architecture and request flow
+
+The EKS cluster and its EC2 worker node group already exist before following this guide. Docker builds the application image on your computer and pushes it to ECR; the nodes later pull that image when Kubernetes starts the Pods. The Kubernetes resources inside the `unit-converter` namespace are created by applying the repository's YAML manifests.
+
+```mermaid
+flowchart LR
+    subgraph Existing["Pre-existing AWS infrastructure"]
+        EKS["Amazon EKS cluster"]
+        Workers["EC2 worker nodes<br/>Kubelet pulls image and runs Pods"]
+        EKS --- Workers
+    end
+
+    Registry["Amazon ECR<br/>unit-converter repository"]
+    LB["AWS load balancer<br/>requested by Service"]
+    Client["Browser or curl client"]
+
+    subgraph Local["Your computer"]
+        Source["Application source + Dockerfile"]
+        Docker["Docker build<br/>Linux/AMD64 image"]
+        YAML["Plain YAML files<br/>k8s/"]
+        Kubectl["kubectl"]
+        Helper["Optional deploy.py<br/>requires --image-uri"]
+    end
+
+    subgraph Cluster["Resources created from YAML in the existing EKS cluster"]
+        Namespace["Namespace<br/>unit-converter"]
+        Deployment["Deployment<br/>unit-converter-app"]
+        Pods["Application Pods<br/>container: unit-converter<br/>2 replicas"]
+        Service["Service<br/>unit-converter-service<br/>port 80 → 8080"]
+        Support["ConfigMap, ServiceAccount,<br/>RBAC, HPA, PodDisruptionBudget"]
+        Namespace --> Deployment
+        Deployment --> Pods
+        Namespace --> Service
+        Namespace --> Support
+    end
+
+    Source --> Docker
+    Docker -->|"push image"| Registry
+    Registry -->|"EC2 nodes pull image"| Workers
+    Workers -->|"run scheduled containers"| Pods
+    YAML --> Kubectl
+    Kubectl -->|"apply manifests"| Namespace
+    Service -->|"requests"| LB
+    Client -->|"HTTP request"| LB
+    LB -->|"forwards traffic"| Service
+    Service -->|"routes to ready Pods"| Pods
+    Pods -.->|"readiness + liveness probes on :8080/"| Workers
+    Helper -.->|"optional apply + set image"| Kubectl
+```
+
+### Following the diagram
+
+1. **Build and publish the image.** Docker uses the repository's `Dockerfile` and application source to create a Linux/AMD64 image on your computer. You push the image to the `unit-converter` ECR repository. When a Pod is scheduled, the EC2 node pulls the image from ECR. This is why the ECR image must exist and the worker nodes must be able to read it before the Deployment can become ready.
+2. **Apply the manifests.** In the main workflow, you use `kubectl apply` to send the plain files in `k8s/` to the existing EKS cluster. The files create the `unit-converter` namespace and its ConfigMap, service account and RBAC resources, Deployment, Service, HPA, and PodDisruptionBudget. Kubernetes creates the Pods described by the Deployment. The checked-in Deployment image `nginx:latest` is only a placeholder; replace it with the pushed ECR URI before applying.
+3. **Serve requests.** The Service selects Pods with the `app: unit-converter` label. It exposes port `80` and forwards requests to port `8080` on ready Pods. As a `LoadBalancer` Service, it asks the AWS integration for a load balancer; once provisioned, clients can send HTTP requests to its external hostname.
+4. **Check application health.** The Deployment defines readiness and liveness HTTP probes against `/` on port `8080`. Readiness controls whether a Pod receives Service traffic. Liveness lets Kubernetes restart a container that repeatedly fails its health check.
+5. **Optional helper.** `deploy.py` is an alternative way to apply the same manifests and set the image with the supplied `--image-uri`; it does not build or push the image. It is not needed for the manual `kubectl` flow, and it does not create the existing EKS cluster, EC2 workers, or ECR repository.
+
+### End-to-end workflow
+
+This second diagram shows the order of operations. The EKS cluster and EC2 node group are prerequisites; steps inside the Kubernetes namespace happen only after you apply the manifests.
+
+```mermaid
+flowchart TD
+    Start["Start with existing EKS cluster<br/>and EC2 worker node group"]
+    Access["Verify AWS identity, EKS access,<br/>and Ready EC2 worker nodes"]
+    Repo{"ECR repository<br/>unit-converter exists?"}
+    CreateRepo["Create the ECR repository"]
+    Build["Build Linux/AMD64 image<br/>from Dockerfile"]
+    Push["Authenticate to ECR<br/>and push tagged image"]
+    Path{"Choose deployment<br/>method"}
+    Replace["Replace nginx:latest in<br/>k8s/deployment.yaml with ECR URI"]
+    ApplyNS["kubectl apply -f k8s/namespace.yaml"]
+    ApplyFiles["kubectl apply -f k8s/"]
+    RunPython["python3 deploy.py<br/>--image-uri IMAGE_URI"]
+    HelperWork["Helper applies k8s/ manifests<br/>and sets the image"]
+    Schedule["Kubernetes schedules Pods;<br/>EC2 nodes pull image from ECR"]
+    Health["Readiness and liveness probes<br/>check HTTP on :8080/"]
+    Ready{"Deployment Pods<br/>ready?"}
+    Service["Service routes port 80<br/>to ready Pods on port 8080"]
+    LB["AWS provisions external<br/>LoadBalancer address"]
+    Test["Test app with curl"]
+    Diagnose["Inspect Pods, events, logs,<br/>image URI, nodes, and Service"]
+    Start --> Access --> Repo
+    Repo -->|"No"| CreateRepo --> Build
+    Repo -->|"Yes"| Build
+    Build --> Push --> Path
+    Path -->|"Manual kubectl"| Replace --> ApplyNS --> ApplyFiles --> Schedule
+    Path -.->|"Optional Python helper"| RunPython --> HelperWork --> Schedule
+    Schedule --> Health --> Ready
+    Ready -->|"Yes"| Service --> LB --> Test
+    Ready -->|"No"| Diagnose
+```
+
+In the manual path, you verify access and worker readiness first, publish an image, replace the placeholder, then apply the namespace and YAML. Kubernetes schedules the Deployment's Pods on the existing EC2 nodes, which pull the image from ECR. Once probes mark Pods ready, the Service routes traffic to them and AWS supplies the external load balancer address. The Python helper is only an alternative for applying the manifests and setting the supplied image; it does not replace the image build/push steps.
+
 ## Before you start
 
 You need:
