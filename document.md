@@ -152,6 +152,8 @@ terraform validate
 
 `terraform validate` requires the provider plugins installed by `terraform init`, but does not need AWS credentials and does not provision resources.
 
+The GitHub Actions workflow in `.github/workflows/terraform-ci.yml` runs the formatting check, initializes providers without a backend, and validates the configuration when a pull request or push to `main` changes files under `eks-terraform/`. It can also be started manually from the Actions tab. The workflow has read-only repository permissions, uses no AWS credentials, and never runs `terraform plan`, `apply`, or `destroy`.
+
 ## 4. Review the plan, then apply
 
 Create a plan and read the proposed changes carefully:
