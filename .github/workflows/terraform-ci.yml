@@ -7,12 +7,14 @@ on:
     paths:
       - "eks-terraform/**"
       - ".github/workflows/terraform-ci.yml"
+      - ".github/workflows/terraform-deploy.yml"
   push:
     branches:
       - main
     paths:
       - "eks-terraform/**"
       - ".github/workflows/terraform-ci.yml"
+      - ".github/workflows/terraform-deploy.yml"
   workflow_dispatch:
 
 permissions:
