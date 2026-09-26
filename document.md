@@ -163,7 +163,12 @@ The GitHub Actions workflow in `.github/workflows/terraform-ci.yml` runs the for
 
 ### Run Terraform plan and apply from GitHub Actions
 
-The separate `.github/workflows/terraform-deploy.yml` workflow creates a Terraform plan when manually dispatched from `main`. Choose `PLAN_ONLY` to review the plan without applying it, or `APPLY` to request that the exact saved plan be applied after approval by an authorized reviewer of the `eks-production` GitHub Environment. It does not run `terraform destroy`.
+The separate `.github/workflows/terraform-deploy.yml` workflow is manually dispatched from `main`. Its **Terraform operation** menu offers:
+
+- `INIT`: configure the S3 backend and download providers; does not create or change infrastructure.
+- `PLAN`: show the proposed Terraform changes; does not apply them.
+- `APPLY`: create a saved plan, then apply that exact plan after an authorized reviewer approves the `eks-production` GitHub Environment.
+- `DESTROY`: first require `DESTROY` in the separate confirmation menu, create a destroy plan, then wait for approval in `eks-production` before applying that deletion plan.
 
 Before dispatching the workflow, configure the following:
 
@@ -171,7 +176,7 @@ Before dispatching the workflow, configure the following:
 2. Configure the GitHub Actions OIDC provider (`token.actions.githubusercontent.com`, audience `sts.amazonaws.com`) and an AWS IAM role. Allow only these OIDC subjects for the role: `repo:vijay1912/unit-converter:ref:refs/heads/main` for the plan job and `repo:vijay1912/unit-converter:environment:eks-production` for the apply job. Grant only the AWS permissions needed by the Terraform resources, plus access to the state object and its lock file. The EKS role also requires `iam:PassRole`.
 3. Add these GitHub repository **variables**: `TERRAFORM_AWS_ROLE_ARN` (the IAM role ARN), `TF_STATE_BUCKET` (the existing bucket name), and `TF_STATE_REGION` (the bucket's AWS region). These are identifiers, not access keys; GitHub Actions obtains short-lived AWS credentials through OIDC.
 4. Create the GitHub Environment named `eks-production`. Require an authorized reviewer and restrict deployments to `main`. GitHub environments without configured protection rules do not pause for approval.
-5. From the repository's Actions tab, select **Terraform Plan and Apply** and choose the `main` branch. Select `PLAN_ONLY` to inspect the plan, or `APPLY` to request deployment. For `APPLY`, the job waits for environment approval and then applies the saved plan file.
+5. After this workflow has been merged into `main`, open the repository's Actions tab, select **Terraform Plan and Apply**, and choose the `main` branch. Select the operation to run. Use `PLAN` to inspect changes; use `APPLY` only when you intend to change infrastructure. `DESTROY` removes Terraform-managed infrastructure and should be used only when you intend to delete it: select `DESTROY` in both the operation and confirmation menus, inspect the destroy plan, and obtain the required environment approval.
 
 The local `terraform init` example above must use the same bucket and key. If infrastructure already exists in a different local or remote state, back it up and migrate that state deliberately before enabling this workflow; an empty state can make Terraform propose creating duplicate resources. Do not merge unreviewed infrastructure changes to `main` expecting them to apply automatically.
 

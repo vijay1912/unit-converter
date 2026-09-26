@@ -4,12 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       deployment_action:
-        description: "Create a plan only, or request approval to apply the plan"
+        description: "Choose which Terraform operation to run"
         required: true
         type: choice
         options:
-          - PLAN_ONLY
+          - INIT
+          - PLAN
           - APPLY
+          - DESTROY
+      confirm_destroy:
+        description: "For DESTROY only, select DESTROY to confirm infrastructure deletion"
+        required: true
+        type: choice
+        options:
+          - NO
+          - DESTROY
 
 permissions:
   contents: read
@@ -33,9 +42,17 @@ jobs:
       - name: Validate requested action
         env:
           DEPLOYMENT_ACTION: ${{ inputs.deployment_action }}
+          CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
         run: |
-          if [ "$DEPLOYMENT_ACTION" != "PLAN_ONLY" ] && [ "$DEPLOYMENT_ACTION" != "APPLY" ]; then
-            echo "::error::Select PLAN_ONLY or APPLY."
+          if [ "$DEPLOYMENT_ACTION" != "INIT" ] && \
+             [ "$DEPLOYMENT_ACTION" != "PLAN" ] && \
+             [ "$DEPLOYMENT_ACTION" != "APPLY" ] && \
+             [ "$DEPLOYMENT_ACTION" != "DESTROY" ]; then
+            echo "::error::Select INIT, PLAN, APPLY, or DESTROY."
+            exit 1
+          fi
+          if [ "$DEPLOYMENT_ACTION" = "DESTROY" ] && [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
+            echo "::error::Select DESTROY in the confirmation input before removing infrastructure."
             exit 1
           fi
 
@@ -94,9 +111,19 @@ jobs:
             -backend-config="use_lockfile=true"
 
       - name: Create plan
+        if: inputs.deployment_action == 'PLAN'
+        run: terraform plan -input=false -no-color
+
+      - name: Create destroy plan
+        if: inputs.deployment_action == 'DESTROY'
+        run: terraform plan -destroy -input=false -no-color -out=tfplan
+
+      - name: Create apply plan
+        if: inputs.deployment_action == 'APPLY'
         run: terraform plan -input=false -no-color -out=tfplan
 
-      - name: Save plan for the approved apply
+      - name: Save plan for the approved operation
+        if: inputs.deployment_action == 'APPLY' || inputs.deployment_action == 'DESTROY'
         uses: actions/upload-artifact@v4
         with:
           name: eks-terraform-plan
@@ -105,8 +132,8 @@ jobs:
           retention-days: 1
 
   apply:
-    name: Apply approved Terraform plan
-    if: inputs.deployment_action == 'APPLY'
+    name: Apply or destroy approved Terraform plan
+    if: inputs.deployment_action == 'APPLY' || inputs.deployment_action == 'DESTROY'
     needs: plan
     runs-on: ubuntu-latest
     environment: eks-production
@@ -152,4 +179,9 @@ jobs:
           path: eks-terraform
 
       - name: Apply reviewed plan
+        if: inputs.deployment_action == 'APPLY'
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Apply reviewed destroy plan
+        if: inputs.deployment_action == 'DESTROY'
         run: terraform apply -input=false -no-color tfplan
