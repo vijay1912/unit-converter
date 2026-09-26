@@ -1,0 +1,155 @@
+name: Terraform Plan and Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_action:
+        description: "Create a plan only, or request approval to apply the plan"
+        required: true
+        type: choice
+        options:
+          - PLAN_ONLY
+          - APPLY
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-production
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Check deployment configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the protected main branch
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow from the main branch only."
+            exit 1
+          fi
+
+      - name: Validate requested action
+        env:
+          DEPLOYMENT_ACTION: ${{ inputs.deployment_action }}
+        run: |
+          if [ "$DEPLOYMENT_ACTION" != "PLAN_ONLY" ] && [ "$DEPLOYMENT_ACTION" != "APPLY" ]; then
+            echo "::error::Select PLAN_ONLY or APPLY."
+            exit 1
+          fi
+
+      - name: Require AWS and Terraform state configuration
+        env:
+          AWS_ROLE_ARN: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
+        run: |
+          missing=0
+          for name in AWS_ROLE_ARN TF_STATE_BUCKET TF_STATE_REGION; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Configure the repository variable $name before running this workflow."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+  plan:
+    name: Create and review Terraform plan
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: eks-terraform
+    env:
+      TF_IN_AUTOMATION: "true"
+      AWS_REGION: ${{ vars.TF_STATE_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.TF_STATE_REGION }}
+
+      - name: Initialize remote state
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=unit-converter/eks/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Create plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Save plan for the approved apply
+        uses: actions/upload-artifact@v4
+        with:
+          name: eks-terraform-plan
+          path: eks-terraform/tfplan
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    name: Apply approved Terraform plan
+    if: inputs.deployment_action == 'APPLY'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: eks-production
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: eks-terraform
+    env:
+      TF_IN_AUTOMATION: "true"
+      AWS_REGION: ${{ vars.TF_STATE_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TERRAFORM_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.TF_STATE_REGION }}
+
+      - name: Initialize remote state
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=unit-converter/eks/terraform.tfstate" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Download reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: eks-terraform-plan
+          path: eks-terraform
+
+      - name: Apply reviewed plan
+        run: terraform apply -input=false -no-color tfplan
