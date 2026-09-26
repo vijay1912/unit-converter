@@ -8,18 +8,17 @@ The only optional automation described here is `deploy.py`. The manual procedure
 
 Kubernetes runs the application in the `unit-converter` namespace. The manifests in `k8s/` create:
 
-| Resource | Name | Purpose |
+| Manifest | Resource / name | What it does |
 | --- | --- | --- |
-| Namespace | `unit-converter` | Keeps this application's Kubernetes resources together. |
-| Deployment | `unit-converter-app` | Runs two application Pods and replaces unhealthy or outdated Pods. |
-| Container | `unit-converter` | Runs the Spring Boot application inside each Pod on port `8080`. |
-| Service | `unit-converter-service` | Routes traffic from port `80` to ready Pods on port `8080` and requests an AWS load balancer. |
-| ConfigMap | `unit-converter-config` | Supplies the application's configuration file. |
-| ServiceAccount, Role, RoleBinding | `unit-converter-sa`, `unit-converter-role`, `unit-converter-rolebinding` | Set the identity and Kubernetes permissions used by the Pods. |
-| HPA | `unit-converter-hpa` | Can scale the Deployment from 2 to 5 replicas when resource metrics are available. |
-| PodDisruptionBudget | `unit-converter-pdb` | Helps keep at least one Pod available during voluntary disruption. |
-
-An **image** is the packaged application that Docker builds; ECR stores that image. A **Pod** is the unit Kubernetes runs, and contains the application container. A **Deployment** maintains the desired number of Pods. A **Service** provides a stable network address for those Pods.
+| `namespace.yaml` | Namespace `unit-converter` | Groups this application's Kubernetes resources. |
+| `serviceaccount.yaml` | ServiceAccount `unit-converter-sa` | Identity assigned to the application Pods. |
+| `role.yaml` | Role `unit-converter-role` | Allows reading ConfigMaps and listing/reading Secrets in this namespace. |
+| `rolebinding.yaml` | RoleBinding `unit-converter-rolebinding` | Gives that Role to `unit-converter-sa`. |
+| `configmap.yaml` | ConfigMap `unit-converter-config` | Stores Spring properties and is mounted by the Deployment at `/etc/config`; the application must read that path to use them. |
+| `deployment.yaml` | Deployment `unit-converter-app`; container `unit-converter` | Starts two Pods on port `8080`, with health probes, CPU request/limit of `250m`/`500m`, memory request/limit of `512Mi`/`1Gi`, and preferred anti-affinity to spread Pods across nodes. The checked-in image is a placeholder and must be replaced as described below. |
+| `service.yaml` | Service `unit-converter-service` | Routes port `80` to ready Pods on port `8080` and requests an AWS load balancer. |
+| `hpa.yaml` | HPA `unit-converter-hpa` | Targets 2–5 replicas using CPU (70%) and memory (80%) metrics; scaling needs a working resource metrics API. |
+| `pdb.yaml` | PodDisruptionBudget `unit-converter-pdb` | Sets `minAvailable: 1` for matching Pods during voluntary disruptions. |
 
 ## How the architecture fits together
 
@@ -114,8 +113,8 @@ flowchart TD
     Push["Authenticate to ECR<br/>and push tagged image"]
     Path{"Choose how to apply<br/>the app manifests"}
     Replace["Replace nginx:latest in<br/>k8s/deployment.yaml with ECR URI"]
-    ApplyNS["kubectl apply -f k8s/namespace.yaml"]
-    ApplyFiles["kubectl apply -f k8s/"]
+    ApplyNS["Apply k8s/namespace.yaml"]
+    ApplyFiles["Apply remaining manifests<br/>in dependency order"]
     RunPython["python3 deploy.py<br/>--image-uri IMAGE_URI"]
     HelperWork["Helper applies k8s/ manifests<br/>and sets the image"]
     Schedule["Kubernetes schedules Pods;<br/>EC2 nodes pull image from ECR"]
@@ -285,14 +284,21 @@ The two values should match. **Do not apply the Deployment while it still refers
 
 ## 5. Apply the Kubernetes YAML
 
-`kubectl apply` creates or updates Kubernetes resources from YAML files. First create the namespace; then apply the rest of the plain YAML from the `k8s/` directory:
+`kubectl apply` creates or updates Kubernetes resources from YAML files. Apply them in dependency order from the repository root:
 
 ```bash
 kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/
+kubectl apply -f k8s/serviceaccount.yaml
+kubectl apply -f k8s/role.yaml
+kubectl apply -f k8s/rolebinding.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+kubectl apply -f k8s/hpa.yaml
+kubectl apply -f k8s/pdb.yaml
 ```
 
-The second command applies the nine manifests in `k8s/`; it includes the namespace manifest again, which is safe. The commands do not run Terraform or any other deployment script.
+These commands apply the nine plain YAML manifests in `k8s/`. They do not run Terraform or another deployment script.
 
 Confirm that the resources were created:
 
@@ -392,6 +398,82 @@ kubectl get pods --show-labels -n unit-converter
 kubectl get endpoints unit-converter-service -n unit-converter
 kubectl describe service unit-converter-service -n unit-converter
 kubectl get events -n unit-converter --sort-by=.lastTimestamp
+```
+
+## Common operations after deployment
+
+Run these commands from a terminal configured for the same EKS cluster. Most inspect or change resources in the `unit-converter` namespace; `kubectl top nodes` reports node-level metrics.
+
+### Check status and application logs
+
+```bash
+kubectl get deployment,pods,service,hpa,pdb -n unit-converter
+kubectl get pods -n unit-converter -o wide
+kubectl logs -n unit-converter -l app=unit-converter --all-containers=true --tail=100
+```
+
+Add `-f` to follow the logs as the application writes them. For one Pod, use `kubectl logs <pod-name> -n unit-converter`; if its container restarted, add `--previous` to see the previous container's logs. To see why a resource is not ready, use `kubectl describe pod <pod-name> -n unit-converter` and `kubectl get events -n unit-converter --sort-by=.lastTimestamp`.
+
+### Scale and check autoscaling
+
+The Deployment starts with two replicas. The HPA can adjust that count between two and five according to the configured CPU and memory targets (70% and 80%). Check its status and whether metrics are available:
+
+```bash
+kubectl get hpa unit-converter-hpa -n unit-converter
+kubectl describe hpa unit-converter-hpa -n unit-converter
+kubectl top nodes
+kubectl top pods -n unit-converter
+```
+
+`kubectl top` and HPA decisions require the cluster's resource metrics API. If values are unavailable or `<unknown>`, check the metrics provider before treating autoscaling as active. To request a replica count manually:
+
+```bash
+kubectl scale deployment/unit-converter-app \
+  --namespace unit-converter \
+  --replicas=3
+```
+
+When HPA is active, it may later adjust the manually requested count within its configured range.
+
+### Update the application image
+
+Build and push a new uniquely tagged image using the ECR steps above. Update the `image:` value in `k8s/deployment.yaml` to that image URI, then apply the Deployment and wait for the rollout:
+
+```bash
+kubectl apply -f k8s/deployment.yaml
+kubectl rollout status deployment/unit-converter-app -n unit-converter --timeout=180s
+kubectl rollout history deployment/unit-converter-app -n unit-converter
+```
+
+Keep the manifest's image URI in sync with the deployed image so a future apply does not restore an older image. To restart the Pods without changing the image:
+
+```bash
+kubectl rollout restart deployment/unit-converter-app -n unit-converter
+kubectl rollout status deployment/unit-converter-app -n unit-converter --timeout=180s
+```
+
+If a new rollout fails, inspect the Pods and events first. You can return the live Deployment to its prior revision with:
+
+```bash
+kubectl rollout history deployment/unit-converter-app -n unit-converter
+kubectl rollout undo deployment/unit-converter-app -n unit-converter
+```
+
+After a rollback, update `k8s/deployment.yaml` to the intended image before applying it again; otherwise the next apply may restore the failed image.
+
+### Update the ConfigMap
+
+The ConfigMap file is mounted at `/etc/config` in each Pod. If you change `k8s/configmap.yaml`, apply it with:
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+```
+
+The mounted file and application behavior are not the same thing: the application must be configured to read `/etc/config/application.properties` for those values to affect it. Confirm the app's Spring Boot configuration before relying on a ConfigMap edit. A process may also need restarting to reload changed settings:
+
+```bash
+kubectl rollout restart deployment/unit-converter-app -n unit-converter
+kubectl rollout status deployment/unit-converter-app -n unit-converter --timeout=180s
 ```
 
 ## Optional: use the Python deployment helper
