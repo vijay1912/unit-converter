@@ -2,7 +2,7 @@
 
 This guide walks through the Terraform configuration in `eks-terraform/`. It creates an Amazon EKS Kubernetes control plane and an EC2-backed managed worker node group, together with the VPC networking and IAM resources they need. It does **not** deploy the unit-converter application or its Kubernetes manifests.
 
-The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-converter-eks`, Kubernetes `1.29`, and two `t3.medium` worker instances. Confirm that the requested Kubernetes version is still supported by Amazon EKS in your selected region before creating the cluster.
+The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-converter-eks`, Kubernetes `1.34`, and two `t3.medium` worker instances. Confirm that Kubernetes `1.34` is supported by Amazon EKS in your selected region before creating the cluster.
 
 ## What you are creating
 
@@ -75,7 +75,7 @@ The checked-in values are:
 |---|---|
 | AWS region | `us-east-1` |
 | Cluster name | `unit-converter-eks` |
-| Kubernetes version | `1.29` |
+| Kubernetes version | `1.34` |
 | VPC CIDR | `10.0.0.0/16` |
 | Public subnet CIDRs | `10.0.1.0/24`, `10.0.2.0/24` |
 | Private subnet CIDRs | `10.0.101.0/24`, `10.0.102.0/24` |
