@@ -16,7 +16,7 @@ The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-c
 
 Terraform reads the files in `eks-terraform/` and creates the AWS infrastructure below. Read the diagram from the outside in: the **VPC** is the cluster's private network; it contains subnets; EC2 worker computers are placed in private subnets; and Kubernetes **pods** (the units that run application containers) run on those computers.
 
-The EKS **control plane** is run and managed by AWS, outside your VPC. It manages the Kubernetes cluster and schedules pods onto available worker computers. The worker computers are created and maintained by the managed node group `unit-converter-worker-nodes`; by default, it requests two `t3.medium` computers.
+The EKS **control plane** is run and managed by AWS, outside your VPC. It manages the Kubernetes cluster and schedules pods onto available worker computers. EKS also uses network interfaces in the VPC subnets you select to communicate with the workers; this Terraform configuration supplies both its public and private subnet IDs. The worker computers are created and maintained by the managed node group `unit-converter-worker-nodes`; by default, it requests two `t3.medium` computers.
 
 ```mermaid
 flowchart TB
@@ -37,7 +37,7 @@ flowchart TB
     EKS -.->|manages the cluster and schedules pods| NODE
 ```
 
-The EKS control plane is not an EC2 worker and is not inside your VPC. The VPC has both public and private subnets; workers run in the private subnets, while NAT gateways in the public subnets let them make outbound connections without public IP addresses. Security groups are AWS network rules: this configuration attaches the cluster security group to EKS and declares a worker security group and a rule for it, but the managed node-group resource does not explicitly attach that worker security group.
+The EKS control plane is not an EC2 worker and does not run inside your VPC, even though EKS uses network interfaces in the selected VPC subnets to communicate with the cluster. The VPC has both public and private subnets; workers run in the private subnets, while NAT gateways in the public subnets let them make outbound connections without public IP addresses. Security groups are AWS network rules: this configuration attaches the cluster security group to EKS and declares a worker security group and a rule for it, but the managed node-group resource does not explicitly attach that worker security group.
 
 This Terraform module creates the AWS infrastructure only. It does not create the unit-converter application, Kubernetes Deployments, or Services. After the cluster and worker computers are ready, you can use `kubectl` to send Kubernetes manifests to the EKS control plane; Kubernetes then schedules the application pods onto the EC2 workers. That application deployment is a separate step.
 
@@ -84,6 +84,18 @@ The checked-in values are:
 
 Edit `terraform.tfvars` to customize the deployment. For example, choose a Kubernetes version available in your region and an EC2 instance type suitable for your workload. The subnet CIDR ranges must not overlap with each other or with networks that need to connect to this VPC. The public and private subnet lists are used together to create subnets and NAT gateways; keep their lengths aligned when changing the availability-zone layout.
 
+For example, update the existing values in `terraform.tfvars` (do not add duplicate definitions):
+
+```hcl
+aws_region       = "us-west-2"
+instance_types   = ["t3.large"]
+desired_capacity = 3
+min_capacity     = 1
+max_capacity     = 4
+```
+
+Keep the desired worker count between the configured minimum and maximum. Changing region or Kubernetes version requires checking that the selected EC2 instance type and EKS version are available there. Changing the region or cluster name on an existing state can replace infrastructure; review the plan carefully and do not apply an unexpected destroy-and-recreate plan. After changing inputs, run `terraform plan` again and review every proposed change before applying it.
+
 The Terraform files are all part of one module and are loaded together. The main files are:
 
 - `main.tf`: Terraform and AWS provider requirements and provider region.
@@ -94,6 +106,20 @@ The Terraform files are all part of one module and are loaded together. The main
 - `eks_cluster.tf`: EKS control plane and CloudWatch log group.
 - `eks_node_group.tf`: EC2-backed EKS managed node group.
 - `outputs.tf`: useful cluster, networking, node group, and kubeconfig outputs.
+
+### A few Terraform terms
+
+- A **provider** is Terraform's plugin for communicating with a platform. This module uses the AWS provider and sets its region from `aws_region`.
+- A **variable** is an input value declared in `variables.tf`. The checked-in `terraform.tfvars` supplies values for those inputs.
+- A **resource** is an AWS object Terraform manages, such as a VPC, IAM role, EKS cluster, or node group. References between resources tell Terraform how they depend on one another and in what order they must be created.
+- An **output** is a value Terraform prints after resources are created, such as a cluster endpoint or the command for configuring `kubectl`.
+- **State** is Terraform's record of the resources it manages and their AWS identifiers. This module does not configure a remote backend, so Terraform normally keeps state locally in the working directory. Use the same directory and state for later plans or cleanup; protect the state and do not commit it or delete it manually.
+
+All `.tf` files in `eks-terraform/` are read as one module; file names organize the configuration for people and do not determine resource creation order. Terraform works out the order from the references and explicit dependencies in the resources.
+
+The configured minimum and maximum node counts are scaling boundaries, not a separate automatic scaling service. This module does not install a node autoscaler. It requests two nodes by default; changing `desired_capacity` and applying a reviewed Terraform plan changes the requested node-group size.
+
+The module creates a CloudWatch log group with seven-day retention. Creating the log group alone does not enable EKS control-plane log delivery; `eks_cluster.tf` does not configure `enabled_cluster_log_types`.
 
 ## 3. Initialize and validate Terraform
 
@@ -150,7 +176,23 @@ When apply finishes, display the values returned by the configuration:
 terraform output
 ```
 
-Outputs include the cluster ID, ARN, API endpoint and Kubernetes version; cluster and worker security group IDs; managed node-group ID and status; VPC and subnet IDs; and a `configure_kubectl` command.
+The outputs declared in `outputs.tf` are:
+
+| Output | What it contains |
+|---|---|
+| `eks_cluster_id` | EKS cluster identifier/name |
+| `eks_cluster_arn` | AWS ARN of the cluster |
+| `eks_cluster_endpoint` | Kubernetes API server endpoint |
+| `eks_cluster_version` | Kubernetes version |
+| `eks_cluster_security_group_id` | ID of the security group configured on the EKS cluster |
+| `eks_worker_security_group_id` | ID of the separately declared worker security group |
+| `worker_node_group_id` | EKS managed node-group identifier |
+| `worker_node_group_status` | Current node-group status |
+| `vpc_id` | ID of the Terraform-created VPC |
+| `public_subnet_ids` / `private_subnet_ids` | IDs of the public and private subnets |
+| `configure_kubectl` | AWS CLI command to add this cluster to local kubeconfig |
+
+Use `terraform output` to display all values, or request one value with `terraform output -raw worker_node_group_status`.
 
 Configure the current `kubectl` context with the output command:
 
@@ -200,17 +242,19 @@ With the default values, the nodes should report `t3.medium` and node group `uni
 
 ## Costs and security notes
 
-Creating these resources can incur AWS charges. In particular, EKS control planes, EC2 worker instances, NAT gateways, Elastic IP addresses, data transfer, and CloudWatch logs may be billed while the environment exists. Two NAT gateways are created from the default two public subnets. Review current AWS pricing for your region and clean up resources when finished.
+Creating these resources can incur AWS charges. In particular, the EKS control plane, EC2 worker instances, NAT gateways, Elastic IP addresses, data transfer, and any CloudWatch log ingestion/storage may be billed while the environment exists. The defaults create two NAT gateways, one for each public subnet, as well as two desired EC2 workers. This module creates a log group but does not enable EKS control-plane log delivery. Check current AWS pricing and service quotas for your region before applying.
 
-The EKS API endpoint is configured for both private and public access. Protect AWS credentials and kubeconfig files, limit who can assume the IAM roles or access the cluster, and review the security-group rules and IAM permissions before using this configuration in a production account. Do not commit Terraform state, AWS credentials, or other secrets.
+The EKS API endpoint is configured for both private and public access. Protect AWS credentials and kubeconfig files, limit who can use the AWS roles or access the cluster, and review IAM permissions and security-group rules before using this configuration in a production account. Do not commit Terraform state, AWS credentials, or other secrets.
 
 ## Troubleshooting
 
 - **Terraform cannot find credentials or AWS returns `AccessDenied`:** check `aws sts get-caller-identity`, the selected AWS CLI profile, and whether your identity has the required AWS permissions.
 - **The selected Kubernetes version is unavailable:** update `kubernetes_version` in `terraform.tfvars` to a version supported by EKS in the selected region, then run `terraform plan` again.
 - **Terraform cannot download the AWS provider:** check network access to the Terraform registry and HashiCorp provider releases, then retry `terraform init`.
-- **The node group is not `ACTIVE` or no nodes appear:** inspect `aws eks describe-nodegroup` and its health issues, wait for provisioning to finish, and verify that the worker role and network resources were created successfully.
+- **The node group is not `ACTIVE` or no nodes appear:** inspect `aws eks describe-nodegroup` and its health issues; check that the selected EC2 type is available and that your account has EKS/EC2 quota and instance capacity in the region; then verify that the worker role and network resources were created successfully.
 - **`kubectl` cannot connect or returns an authorization error:** rerun the `aws eks update-kubeconfig` command for the correct region and cluster, confirm the active AWS identity, and ensure that identity is authorized to access the EKS cluster.
+- **Subnets or routes fail to plan:** confirm CIDR ranges do not overlap, and that public and private subnet lists have matching lengths. Each list entry is assigned to an availability zone selected by Terraform in the configured region.
+- **Nodes exist but are not `Ready`:** check `kubectl describe node <node-name>` and the managed node group's health issues; allow time for node initialization and confirm the nodes can use the private-subnet NAT route.
 - **A plan proposes unexpected changes:** stop before applying. Confirm that you are in `eks-terraform/`, using the expected AWS account/profile and `terraform.tfvars`, and review the plan and Terraform state.
 
 ## Safely destroy the environment
@@ -228,3 +272,5 @@ terraform destroy
 ```
 
 Review the displayed plan and type `yes` to confirm. Destroying the cluster removes the EKS control plane and its managed worker group along with the Terraform-managed network, IAM, and logging resources. It does not remove local kubeconfig entries or unrelated resources. Keep Terraform state until destroy completes successfully; do not manually delete the state file as a substitute for destroying resources.
+
+If you deployed workloads separately, clean up those workloads and any AWS resources they created before destroying the cluster. This guide does not cover application or manifest deployment.
