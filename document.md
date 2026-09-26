@@ -17,37 +17,58 @@ The checked-in configuration defaults to AWS region `us-east-1`, cluster `unit-c
 Terraform reads the files in `eks-terraform/` and creates the AWS infrastructure below. Start with the AWS account, then look inside the VPC: the VPC contains public and private subnets in two availability zones. The private subnets hold EC2 worker computers; Kubernetes pods can run on those computers after you deploy an application. Together, the EKS control plane and its connected worker computers form the Kubernetes cluster.
 
 The EKS **control plane** is managed by AWS. It is part of the EKS cluster, but it is not an EC2 worker and does not run inside your VPC. It manages Kubernetes and tells the workers where to run pods. EKS uses network interfaces in the VPC subnets to communicate with the workers. The managed node group `unit-converter-worker-nodes` creates the worker computers across the supplied private subnets; its default desired total is two `t3.medium` instances.
-
-```mermaid
-flowchart TB
-    subgraph ACCOUNT["AWS account"]
-        direction TB
-        EKS["AWS-managed EKS control plane<br/>cluster: unit-converter-eks<br/>outside the VPC"]
-
-        subgraph VPC["VPC: unit-converter-eks-vpc<br/>10.0.0.0/16"]
-            direction TB
-            IGW["Internet gateway<br/>VPC connection to internet"]
-
-            subgraph PUBLIC["Public subnets in two AZs<br/>10.0.1.0/24 and 10.0.2.0/24"]
-                direction LR
-                NAT1["NAT gateway 1"]
-                NAT2["NAT gateway 2"]
-            end
-
-            subgraph PRIVATE["Private subnets in two AZs<br/>10.0.101.0/24 and 10.0.102.0/24"]
-                direction LR
-                NODES["EC2 worker computers<br/>managed node group<br/>2 desired, t3.medium"]
-                PODS["Pods run on workers<br/>(added later; not created by Terraform)"]
-                NODES -->|can run| PODS
-            end
-
-            IGW -->|public subnet route| PUBLIC
-            PRIVATE -->|outbound via NAT| PUBLIC
-        end
-
-        EKS -.->|manages Kubernetes; schedules pods on| NODES
-    end
-```
+┌─────────────────────────────────────────────────────────────────┐
+│                     AWS Account                                 │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │                 VPC (10.0.0.0/16)                         │ │
+│  │  ┌────────────────────────────────────────────────────┐  │ │
+│  │  │           EKS Cluster Control Plane               │  │ │
+│  │  │  (Managed by AWS - No worker nodes needed here)  │  │ │
+│  │  └────────────────────────────────────────────────────┘  │ │
+│  │                                                           │ │
+│  │  ┌──────────────────┐    ┌──────────────────┐           │ │
+│  │  │  Public Subnet   │    │  Public Subnet   │           │ │
+│  │  │  (10.0.1.0/24)   │    │  (10.0.2.0/24)   │           │ │
+│  │  │  - NAT Gateway   │    │  - NAT Gateway   │           │ │
+│  │  └──────────────────┘    └──────────────────┘           │ │
+│  │                                                           │ │
+│  │  ┌──────────────────┐    ┌──────────────────┐           │ │
+│  │  │ Private Subnet   │    │ Private Subnet   │           │ │
+│  │  │(10.0.101.0/24)   │    │(10.0.102.0/24)   │           │ │
+│  │  │                  │    │                  │           │ │
+│  │  │ ┌──────────────┐ │    │ ┌──────────────┐ │           │ │
+│  │  │ │   EC2 Node   │ │    │ │   EC2 Node   │ │           │ │
+│  │  │ │ (t3.medium)  │ │    │ │ (t3.medium)  │ │           │ │
+│  │  │ │              │ │    │ │              │ │           │ │
+│  │  │ │ Kubelets +   │ │    │ │ Kubelets +   │ │           │ │
+│  │  │ │ CRI Runtime  │ │    │ │ CRI Runtime  │ │           │ │
+│  │  │ │              │ │    │ │              │ │           │ │
+│  │  │ │ ┌──────────┐ │ │    │ │ ┌──────────┐ │ │           │ │
+│  │  │ │ │  Pod 1   │ │ │    │ │ │  Pod 3   │ │ │           │ │
+│  │  │ │ │(8080)    │ │ │    │ │ │(8080)    │ │ │           │ │
+│  │  │ │ └──────────┘ │ │    │ │ └──────────┘ │ │           │ │
+│  │  │ │              │ │    │ │              │ │           │ │
+│  │  │ │ ┌──────────┐ │ │    │ │ ┌──────────┐ │ │           │ │
+│  │  │ │ │  Pod 2   │ │ │    │ │ │  Pod 4   │ │ │           │ │
+│  │  │ │ │(8080)    │ │ │    │ │ │(8080)    │ │ │           │ │
+│  │  │ │ └──────────┘ │ │    │ │ └──────────┘ │ │           │ │
+│  │  │ └──────────────┘ │    │ └──────────────┘ │           │ │
+│  │  └──────────────────┘    └──────────────────┘           │ │
+│  │           ↓                      ↓                       │ │
+│  │  ┌────────────────────────────────────────┐             │ │
+│  │  │   LoadBalancer Service (Port 80)       │             │ │
+│  │  │   Routes to pods on port 8080          │             │ │
+│  │  └────────────────────────────────────────┘             │ │
+│  │                    ↓                                     │ │
+│  │  ┌────────────────────────────────────────┐             │ │
+│  │  │   Internet Gateway                      │             │ │
+│  │  │   Public internet access                │             │ │
+│  │  └────────────────────────────────────────┘             │ │
+│  └───────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+                           ↓
+                    Internet Users
+                    curl http://app.example.com
 
 The two public subnets each contain a NAT gateway. The internet gateway is the VPC's route to the internet; NAT lets private-subnet workers make outbound connections without public IP addresses. The Terraform configuration also creates security groups (AWS network-access rules) and IAM roles (AWS permissions): it assigns the cluster security group and cluster role to EKS, and a worker role to the node group. It declares a worker security group and a rule for it too, but the managed node-group resource does not explicitly attach that worker security group.
 
