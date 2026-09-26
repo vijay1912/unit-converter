@@ -47,6 +47,9 @@ jobs:
       AWS_REGION: ${{ vars.TF_STATE_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Check main branch and requested operation
         env:
           OPERATION: ${{ inputs.operation }}
@@ -79,9 +82,6 @@ jobs:
             echo "::error::Configure repository variable TF_STATE_REGION."
             exit 1
           fi
-
-      - name: Check out repository
-        uses: actions/checkout@v4
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
