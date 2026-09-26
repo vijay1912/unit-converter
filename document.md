@@ -163,22 +163,19 @@ The GitHub Actions workflow in `.github/workflows/terraform-ci.yml` runs the for
 
 ### Run Terraform plan and apply from GitHub Actions
 
-The separate `.github/workflows/terraform-deploy.yml` workflow is manually dispatched from `main`. Its **Terraform operation** menu offers:
+The separate `.github/workflows/terraform-deploy.yml` workflow automatically runs `terraform init` and a read-only `terraform plan` when Terraform files or this workflow change on `main`. The plan job uses the configured S3 backend and AWS OIDC role; it does not apply the plan or change infrastructure.
 
-- `INIT`: configure the S3 backend and download providers; does not create or change infrastructure.
-- `PLAN`: show the proposed Terraform changes; does not apply them.
-- `APPLY`: create a saved plan, then apply that exact plan after an authorized reviewer approves the `eks-production` GitHub Environment.
-- `DESTROY`: first require `DESTROY` in the separate confirmation menu, create a destroy plan, then wait for approval in `eks-production` before applying that deletion plan.
+For a manual run from `main`, the **Terraform operation** menu offers `APPLY` or `DESTROY`. Select the same operation in the confirmation menu. `APPLY` creates a saved plan and applies that exact plan only after an authorized reviewer approves the `eks-production` GitHub Environment. `DESTROY` creates a destroy plan and likewise waits for environment approval before deleting Terraform-managed infrastructure. Do not select either operation unless you intend to make that change.
 
-Before dispatching the workflow, configure the following:
+Before the automatic plan or manual apply/destroy can run, configure the following:
 
 1. Create an S3 bucket for Terraform state in the target AWS account. Enable bucket versioning, block public access, and configure encryption. The workflow stores the state at `unit-converter/eks/terraform.tfstate` and enables S3 lock files.
 2. Configure the GitHub Actions OIDC provider (`token.actions.githubusercontent.com`, audience `sts.amazonaws.com`) and an AWS IAM role. Allow only these OIDC subjects for the role: `repo:vijay1912/unit-converter:ref:refs/heads/main` for the plan job and `repo:vijay1912/unit-converter:environment:eks-production` for the apply job. Grant only the AWS permissions needed by the Terraform resources, plus access to the state object and its lock file. The EKS role also requires `iam:PassRole`.
 3. Add these GitHub repository **variables**: `TERRAFORM_AWS_ROLE_ARN` (the IAM role ARN), `TF_STATE_BUCKET` (the existing bucket name), and `TF_STATE_REGION` (the bucket's AWS region). These are identifiers, not access keys; GitHub Actions obtains short-lived AWS credentials through OIDC.
 4. Create the GitHub Environment named `eks-production`. Require an authorized reviewer and restrict deployments to `main`. GitHub environments without configured protection rules do not pause for approval.
-5. After this workflow has been merged into `main`, open the repository's Actions tab, select **Terraform Plan and Apply**, and choose the `main` branch. Select the operation to run. Use `PLAN` to inspect changes; use `APPLY` only when you intend to change infrastructure. `DESTROY` removes Terraform-managed infrastructure and should be used only when you intend to delete it: select `DESTROY` in both the operation and confirmation menus, inspect the destroy plan, and obtain the required environment approval.
+5. After this workflow has been merged into `main`, Terraform changes pushed to `main` automatically run `init` and a read-only plan. To make changes or delete infrastructure, open the repository's Actions tab, select **Terraform Plan and Apply**, choose the `main` branch, and select `APPLY` or `DESTROY` in both the operation and confirmation menus. Review the plan and obtain the required `eks-production` environment approval before the workflow proceeds.
 
-The local `terraform init` example above must use the same bucket and key. If infrastructure already exists in a different local or remote state, back it up and migrate that state deliberately before enabling this workflow; an empty state can make Terraform propose creating duplicate resources. Do not merge unreviewed infrastructure changes to `main` expecting them to apply automatically.
+The local `terraform init` example above must use the same bucket and key. If infrastructure already exists in a different local or remote state, back it up and migrate that state deliberately before enabling this workflow; an empty state can make Terraform propose creating duplicate resources. Merging a Terraform change to `main` runs only `init` and `plan`; it never automatically applies or destroys infrastructure.
 
 This workflow provisions AWS infrastructure only. The current repository does not include an application `Dockerfile`, ECR image configuration, or Kubernetes manifests, so it cannot yet build and deploy the application after apply. Add/configure those application deployment inputs before adding a post-apply application job.
 

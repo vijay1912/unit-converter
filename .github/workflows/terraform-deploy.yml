@@ -1,23 +1,28 @@
 name: Terraform Plan and Apply
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "eks-terraform/**"
+      - ".github/workflows/terraform-deploy.yml"
   workflow_dispatch:
     inputs:
       deployment_action:
-        description: "Choose which Terraform operation to run"
+        description: "Choose APPLY or DESTROY. INIT and PLAN run automatically when Terraform changes reach main."
         required: true
         type: choice
         options:
-          - INIT
-          - PLAN
           - APPLY
           - DESTROY
-      confirm_destroy:
-        description: "For DESTROY only, select DESTROY to confirm infrastructure deletion"
+      confirm_operation:
+        description: "Confirm the selected manual operation by selecting the same value"
         required: true
         type: choice
         options:
           - NO
+          - APPLY
           - DESTROY
 
 permissions:
@@ -41,18 +46,19 @@ jobs:
 
       - name: Validate requested action
         env:
+          EVENT_NAME: ${{ github.event_name }}
           DEPLOYMENT_ACTION: ${{ inputs.deployment_action }}
-          CONFIRM_DESTROY: ${{ inputs.confirm_destroy }}
+          CONFIRM_OPERATION: ${{ inputs.confirm_operation }}
         run: |
-          if [ "$DEPLOYMENT_ACTION" != "INIT" ] && \
-             [ "$DEPLOYMENT_ACTION" != "PLAN" ] && \
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && \
              [ "$DEPLOYMENT_ACTION" != "APPLY" ] && \
              [ "$DEPLOYMENT_ACTION" != "DESTROY" ]; then
-            echo "::error::Select INIT, PLAN, APPLY, or DESTROY."
+            echo "::error::Manual runs may select APPLY or DESTROY only. INIT and PLAN run automatically when Terraform changes reach main."
             exit 1
           fi
-          if [ "$DEPLOYMENT_ACTION" = "DESTROY" ] && [ "$CONFIRM_DESTROY" != "DESTROY" ]; then
-            echo "::error::Select DESTROY in the confirmation input before removing infrastructure."
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && \
+             [ "$CONFIRM_OPERATION" != "$DEPLOYMENT_ACTION" ]; then
+            echo "::error::Confirm the manual operation by selecting the same value in the confirmation input."
             exit 1
           fi
 
@@ -110,17 +116,17 @@ jobs:
             -backend-config="encrypt=true" \
             -backend-config="use_lockfile=true"
 
-      - name: Create plan
-        if: inputs.deployment_action == 'PLAN'
+      - name: Create automatic plan
+        if: github.event_name == 'push'
         run: terraform plan -input=false -no-color
+
+      - name: Create manually requested apply plan
+        if: inputs.deployment_action == 'APPLY'
+        run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Create destroy plan
         if: inputs.deployment_action == 'DESTROY'
         run: terraform plan -destroy -input=false -no-color -out=tfplan
-
-      - name: Create apply plan
-        if: inputs.deployment_action == 'APPLY'
-        run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Save plan for the approved operation
         if: inputs.deployment_action == 'APPLY' || inputs.deployment_action == 'DESTROY'
@@ -133,7 +139,7 @@ jobs:
 
   apply:
     name: Apply or destroy approved Terraform plan
-    if: inputs.deployment_action == 'APPLY' || inputs.deployment_action == 'DESTROY'
+    if: github.event_name == 'workflow_dispatch' && (inputs.deployment_action == 'APPLY' || inputs.deployment_action == 'DESTROY')
     needs: plan
     runs-on: ubuntu-latest
     environment: eks-production
