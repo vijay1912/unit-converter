@@ -1,0 +1,24 @@
+replicaCount: 2
+
+image:
+  repository: unit-converter
+  tag: "0.0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nameOverride: ""
+fullnameOverride: ""
